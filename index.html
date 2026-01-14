@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="manifest" href="manifest.json" />
+  <title>НЕ МОРГНИ</title>
+  <style>
+    body { margin:0; background:#000; color:#fff; font-family: system-ui, Arial; }
+    .wrap { padding:16px; max-width:520px; margin:0 auto; }
+    .card { border:1px solid #222; border-radius:16px; padding:16px; background:#050505; }
+    button { width:100%; padding:14px; border-radius:14px; border:1px solid #333; background:#111; color:#fff; font-size:16px; }
+    button.primary { background:#fff; color:#000; border-color:#fff; font-weight:700; }
+    .row { display:flex; gap:12px; }
+    .row > * { flex:1; }
+    #video { width:100%; border-radius:16px; border:1px solid #222; background:#000; }
+    .muted { color:#aaa; font-size:12px; line-height:1.4; }
+    .big { font-size:44px; font-weight:800; letter-spacing:1px; }
+    .toast { margin-top:10px; padding:10px 12px; border-radius:12px; border:1px solid #222; background:#0a0a0a; min-height:18px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" id="screenStart">
+      <h1>НЕ МОРГНИ</h1>
+      <div class="muted">Эксперимент на выдержку внимания. Любое моргание — поражение.</div>
+      <button class="primary" id="btnStart">НАЧАТЬ 2:00</button>
+    </div>
+
+    <div class="card" id="screenPlay" style="display:none;">
+      <div class="big" id="timer">02:00</div>
+      <video id="video" autoplay playsinline muted></video>
+      <div class="toast" id="toast">Проверка…</div>
+      <button id="btnQuit">Выйти</button>
+    </div>
+
+    <div class="card" id="screenLose" style="display:none;">
+      <h2>ОБНАРУЖЕНО МОРГАНИЕ</h2>
+      <div class="muted" id="loseMeta"></div>
+      <button class="primary" id="btnRevenge">РЕВАНШ — $0.99</button>
+      <button id="btnRetry">Попробовать снова</button>
+    </div>
+
+    <div class="card" id="screenWin" style="display:none;">
+      <h2>ТЫ НЕ МОРГНУЛ</h2>
+      <div class="muted" id="winMeta"></div>
+      <button id="btnAgain">Ещё раз</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
