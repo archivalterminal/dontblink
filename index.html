@@ -14,40 +14,52 @@
     button.primary { background:#fff; color:#000; border-color:#fff; font-weight:700; }
     .row { display:flex; gap:12px; }
     .row > * { flex:1; }
-    #video { width:100%; border-radius:16px; border:1px solid #222; background:#000; }
+    #video { width:100%; border-radius:16px; border:1px solid #222; background:#000; margin-top:12px; }
     .muted { color:#aaa; font-size:12px; line-height:1.4; }
     .big { font-size:44px; font-weight:800; letter-spacing:1px; }
     .toast { margin-top:10px; padding:10px 12px; border-radius:12px; border:1px solid #222; background:#0a0a0a; min-height:18px; }
+    h1,h2{margin:0 0 10px 0;}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card" id="screenStart">
       <h1>НЕ МОРГНИ</h1>
-      <div class="muted">Эксперимент на выдержку внимания. Любое моргание — поражение.</div>
+      <div class="muted">Эксперимент на выдержку внимания. Камера анализирует глаза. Моргнул — проиграл.</div>
+      <div style="height:12px"></div>
       <button class="primary" id="btnStart">НАЧАТЬ 2:00</button>
+      <div class="muted" style="margin-top:10px;">Для точности: яркий свет, лицо в кадре, первые 1–2 сек не моргать (калибровка).</div>
     </div>
 
     <div class="card" id="screenPlay" style="display:none;">
       <div class="big" id="timer">02:00</div>
+      <div class="toast" id="toast">Калибровка… не моргай 1–2 сек</div>
       <video id="video" autoplay playsinline muted></video>
-      <div class="toast" id="toast">Проверка…</div>
+      <div style="height:12px"></div>
       <button id="btnQuit">Выйти</button>
     </div>
 
     <div class="card" id="screenLose" style="display:none;">
       <h2>ОБНАРУЖЕНО МОРГАНИЕ</h2>
       <div class="muted" id="loseMeta"></div>
+      <div style="height:12px"></div>
       <button class="primary" id="btnRevenge">РЕВАНШ — $0.99</button>
+      <div style="height:10px"></div>
       <button id="btnRetry">Попробовать снова</button>
+      <div class="muted" style="margin-top:10px;">Реванш = повторная верификация результата.</div>
     </div>
 
     <div class="card" id="screenWin" style="display:none;">
       <h2>ТЫ НЕ МОРГНУЛ</h2>
       <div class="muted" id="winMeta"></div>
+      <div style="height:12px"></div>
       <button id="btnAgain">Ещё раз</button>
     </div>
   </div>
+
+  <!-- MediaPipe FaceMesh -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
 
   <script src="app.js"></script>
 </body>
