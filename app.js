@@ -1,5 +1,5 @@
 // =====================
-// ЛУПОГЛАЗ: real eye-warp + blink detect (FIX: camera restart after lose)
+// ЛУПОГЛАЗ: Android-stable (restart camera reliably)
 // =====================
 
 const video = document.getElementById("video");
@@ -21,7 +21,7 @@ let faceMesh = null;
 let camera = null;
 
 let running = false;
-let starting = false; // prevents double start
+let starting = false;
 
 function show(which){
   screenStart.style.display = "none";
@@ -29,6 +29,8 @@ function show(which){
   screenLose.style.display = "none";
   which.style.display = "block";
 }
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
 function hardDetachVideo(){
   try { video.pause(); } catch {}
@@ -40,28 +42,15 @@ function hardDetachVideo(){
 function stopAll(){
   running = false;
 
-  // stop mediapipe camera loop
-  if (camera) {
-    try { camera.stop(); } catch {}
-    camera = null;
-  }
+  if (camera) { try { camera.stop(); } catch {} camera = null; }
+  if (faceMesh) { try { faceMesh.close(); } catch {} faceMesh = null; }
 
-  // close facemesh
-  if (faceMesh) {
-    try { faceMesh.close(); } catch {}
-    faceMesh = null;
-  }
-
-  // stop stream tracks
   if (stream) {
     try { stream.getTracks().forEach(t => t.stop()); } catch {}
     stream = null;
   }
 
-  // detach video element completely (important for Android)
   hardDetachVideo();
-
-  // clear canvas
   try { ctx.clearRect(0,0,canvas.width,canvas.height); } catch {}
 }
 
@@ -72,7 +61,6 @@ function dist(a,b){
   return Math.hypot(dx, dy);
 }
 
-// Eye Aspect Ratio (for blink)
 function eyeEAR(lm, isLeft){
   const idx = isLeft
     ? [33, 160, 158, 133, 153, 144]
@@ -92,7 +80,7 @@ function eyeEAR(lm, isLeft){
   return (v1 + v2) / (2*h);
 }
 
-// ---------- REAL eye warp (crop eye region and scale it back)
+// ---------- REAL eye warp
 const off = document.createElement("canvas");
 const offCtx = off.getContext("2d");
 
@@ -152,7 +140,7 @@ function warpEye(lm, ringIds, scale){
   ctx.restore();
 }
 
-// ---------- blink detector state
+// ---------- blink state
 let calibrateUntil = 0;
 let graceUntil = 0;
 
@@ -163,7 +151,7 @@ let closedFrames = 0;
 let lastBlinkTs = 0;
 let seenOpenEyes = false;
 
-// TUNE:
+// tuning
 const EYE_SCALE = 2.5;
 const CALIB_MS = 2000;
 const GRACE_MS = 1200;
@@ -179,13 +167,26 @@ function lose(reason){
   show(screenLose);
 }
 
+// Wait for loadedmetadata (Android critical)
+function waitLoadedMetadata(v){
+  return new Promise((resolve) => {
+    if (v.readyState >= 1 && v.videoWidth) return resolve();
+    const onMeta = () => {
+      v.removeEventListener("loadedmetadata", onMeta);
+      resolve();
+    };
+    v.addEventListener("loadedmetadata", onMeta, { once: true });
+  });
+}
+
 async function start(){
-  if (starting) return; // prevents re-entry
+  if (starting) return;
   starting = true;
 
   try {
-    // just in case previous run left something
+    // hard cleanup first
     stopAll();
+    await sleep(200); // Android needs a tiny gap between stop/start
 
     show(screenPlay);
     hud.textContent = "Калибровка… 2 секунды не моргай";
@@ -199,27 +200,28 @@ async function start(){
     calibrateUntil = Date.now() + CALIB_MS;
     graceUntil = calibrateUntil + GRACE_MS;
 
-    // get camera
-_triangle:
+    // camera
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user" },
       audio: false
     });
 
+    // sanity: ensure tracks live
+    const vt = stream.getVideoTracks()[0];
+    if (!vt) throw new Error("No video track");
+    if (vt.readyState !== "live") throw new Error("Video track not live");
+
     video.srcObject = stream;
+    await waitLoadedMetadata(video);
 
-    // On some phones play() can fail first time; try once more
-    try {
-      await video.play();
-    } catch {
-      await new Promise(r => setTimeout(r, 150));
-      await video.play();
-    }
-
+    // set canvas to real video size
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
 
-    // init facemesh
+    // now play
+    try { await video.play(); } catch { /* ignore; canvas draw still works */ }
+
+    // facemesh
     faceMesh = new FaceMesh({
       locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
     });
@@ -236,7 +238,7 @@ _triangle:
     faceMesh.onResults((res) => {
       if (!running) return;
 
-      // draw mirrored base video
+      // draw mirrored video to canvas
       ctx.save();
       ctx.clearRect(0,0,canvas.width,canvas.height);
       ctx.translate(canvas.width, 0);
@@ -249,10 +251,9 @@ _triangle:
         hud.textContent = "Лицо не видно. Поднеси телефон ближе.";
         return;
       }
-
       const lm = faces[0];
 
-      // eye warp
+      // filter always on
       warpEye(lm, LEFT_EYE_RING, EYE_SCALE);
       warpEye(lm, RIGHT_EYE_RING, EYE_SCALE);
 
@@ -269,7 +270,6 @@ _triangle:
         const base = earSamples.length
           ? earSamples.reduce((a,b)=>a+b,0) / earSamples.length
           : 0.28;
-
         earThreshold = Math.max(0.16, base * THRESH_MULT);
         hud.textContent = "Не моргай.";
         return;
@@ -288,7 +288,6 @@ _triangle:
       }
     });
 
-    // mediapipe camera loop
     camera = new Camera(video, {
       onFrame: async () => {
         if (!faceMesh || !running) return;
@@ -303,7 +302,7 @@ _triangle:
     console.error(e);
     stopAll();
     show(screenStart);
-    alert("Камера не запустилась. Проверь разрешение камеры в браузере и попробуй ещё раз.");
+    alert("Камера не запустилась. На Android бывает. Перезагрузи страницу и попробуй ещё раз.");
   } finally {
     starting = false;
   }
@@ -312,16 +311,4 @@ _triangle:
 // buttons
 btnStart.onclick = () => start();
 btnRetry.onclick = () => start();
-
-btnQuit.onclick = () => {
-  stopAll();
-  show(screenStart);
-};
-
-// extra safety: stop camera when tab hidden (helps some Android devices)
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    stopAll();
-    show(screenStart);
-  }
-});
+btnQuit.onclick = () => { stopAll(); show(screenStart); };
