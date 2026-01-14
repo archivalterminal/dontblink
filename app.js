@@ -1,6 +1,7 @@
 // =====================
 // ЛУПОГЛАЗ: Android-proof
 // Camera starts ONCE, rounds reset without getUserMedia again
+// + Improved blink sensitivity
 // =====================
 
 const video = document.getElementById("video");
@@ -135,12 +136,15 @@ let closedFrames = 0;
 let lastBlinkTs = 0;
 let seenOpenEyes = false;
 
-// tuning
+// tuning (more sensitive)
 const CALIB_MS = 2000;
 const GRACE_MS = 1200;
-const FRAMES_TO_CONFIRM = 4;
-const DEBOUNCE_MS = 700;
-const THRESH_MULT = 0.70;
+const FRAMES_TO_CONFIRM = 2;  // was 4
+const DEBOUNCE_MS = 450;      // was 700
+const THRESH_MULT = 0.78;     // was 0.70 (more sensitive)
+
+// extra sensitivity in comparison
+const CLOSE_MULT = 1.08;      // ear < earThreshold*CLOSE_MULT
 
 function resetRound(){
   earSamples = [];
@@ -216,36 +220,43 @@ async function startSessionOnce(){
 
     const lm = faces[0];
 
-    // Filter ALWAYS ON (even on lose screen it will keep drawing if canvas visible)
+    // Filter ALWAYS ON
     warpEye(lm, LEFT_EYE_RING);
     warpEye(lm, RIGHT_EYE_RING);
 
     // If round not active, don't detect blinks
     if (!playing) return;
 
-    // blink detect
     const ear = (eyeEAR(lm, true) + eyeEAR(lm, false)) / 2;
     const now = Date.now();
 
+    // calibration
     if (now < calibrateUntil) {
       if (ear > 0.20 && ear < 0.65) earSamples.push(ear);
       return;
     }
 
+    // set threshold
     if (earThreshold === null) {
       const base = earSamples.length
         ? earSamples.reduce((a,b)=>a+b,0) / earSamples.length
         : 0.28;
+
       earThreshold = Math.max(0.16, base * THRESH_MULT);
       hud.textContent = "Не моргай.";
       return;
     }
 
-    if (ear > earThreshold * 1.20) seenOpenEyes = true;
+    // saw open eyes (prevents instant trigger on weird first frames)
+    if (ear > earThreshold * 1.15) seenOpenEyes = true;
+
+    // grace time
     if (now < graceUntil) return;
     if (!seenOpenEyes) return;
 
-    const isClosed = ear < earThreshold;
+    // more sensitive closed check
+    const isClosed = ear < (earThreshold * CLOSE_MULT);
+
     closedFrames = isClosed ? (closedFrames + 1) : 0;
 
     if (closedFrames >= FRAMES_TO_CONFIRM && (now - lastBlinkTs) > DEBOUNCE_MS) {
@@ -289,8 +300,8 @@ async function startGame(){
   starting = true;
   try {
     show(screenPlay);
-    await startSessionOnce();   // camera only once
-    resetRound();               // round resets any time
+    await startSessionOnce(); // camera only once
+    resetRound();
   } catch (e) {
     console.error(e);
     alert("Камера не запустилась. Проверь разрешение камеры в Chrome.");
@@ -305,6 +316,6 @@ btnStart.onclick = () => startGame();
 btnRetry.onclick = () => startGame();
 
 btnQuit.onclick = () => {
-  stopSession();     // only here we stop camera
+  stopSession();
   show(screenStart);
 };
