@@ -1,7 +1,3 @@
-// =====================
-// ЛУПОГЛАЗ: Android-stable (restart camera reliably)
-// =====================
-
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -54,7 +50,7 @@ function stopAll(){
   try { ctx.clearRect(0,0,canvas.width,canvas.height); } catch {}
 }
 
-// ---------- helpers
+// ---- helpers
 function dist(a,b){
   const dx = a.x - b.x;
   const dy = a.y - b.y;
@@ -80,10 +76,11 @@ function eyeEAR(lm, isLeft){
   return (v1 + v2) / (2*h);
 }
 
-// ---------- REAL eye warp
+// ---- real eye warp
 const off = document.createElement("canvas");
 const offCtx = off.getContext("2d");
 
+// rings
 const LEFT_EYE_RING  = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
 const RIGHT_EYE_RING = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
 
@@ -96,16 +93,20 @@ function boundsOf(lm, ids){
   }
   return {minX, minY, maxX, maxY};
 }
-function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
-function warpEye(lm, ringIds, scale){
+// Настройка “лупоглаза” без перекрытия головы:
+const EYE_SCALE = 1.65;   // визуально крупно, но не на всю голову
+const PAD = 0.07;         // меньше захват области = меньше “разнос”
+const ALPHA = 0.98;
+
+function warpEye(lm, ringIds){
   const b = boundsOf(lm, ringIds);
-  const pad = 0.14;
 
-  let x1 = clamp(b.minX - pad, 0, 1);
-  let y1 = clamp(b.minY - pad, 0, 1);
-  let x2 = clamp(b.maxX + pad, 0, 1);
-  let y2 = clamp(b.maxY + pad, 0, 1);
+  let x1 = clamp(b.minX - PAD, 0, 1);
+  let y1 = clamp(b.minY - PAD, 0, 1);
+  let x2 = clamp(b.maxX + PAD, 0, 1);
+  let y2 = clamp(b.maxY + PAD, 0, 1);
 
   const W = canvas.width, H = canvas.height;
 
@@ -119,18 +120,19 @@ function warpEye(lm, ringIds, scale){
   offCtx.clearRect(0,0,sw,sh);
   offCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
 
-  const dw = sw * scale;
-  const dh = sh * scale;
+  const dw = sw * EYE_SCALE;
+  const dh = sh * EYE_SCALE;
   const dx = sx - (dw - sw) / 2;
   const dy = sy - (dh - sh) / 2;
 
+  // мягкая эллипс-маска, но НЕ слишком большая
   ctx.save();
-  ctx.globalAlpha = 0.98;
+  ctx.globalAlpha = ALPHA;
 
   const cx = sx + sw/2;
   const cy = sy + sh/2;
-  const rx = (sw * 0.58) * scale;
-  const ry = (sh * 0.52) * scale;
+  const rx = (sw * 0.52) * EYE_SCALE;
+  const ry = (sh * 0.48) * EYE_SCALE;
 
   ctx.beginPath();
   ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
@@ -140,19 +142,15 @@ function warpEye(lm, ringIds, scale){
   ctx.restore();
 }
 
-// ---------- blink state
+// ---- blink detector state
 let calibrateUntil = 0;
 let graceUntil = 0;
-
 let earSamples = [];
 let earThreshold = null;
-
 let closedFrames = 0;
 let lastBlinkTs = 0;
 let seenOpenEyes = false;
 
-// tuning
-const EYE_SCALE = 2.5;
 const CALIB_MS = 2000;
 const GRACE_MS = 1200;
 const FRAMES_TO_CONFIRM = 4;
@@ -167,15 +165,10 @@ function lose(reason){
   show(screenLose);
 }
 
-// Wait for loadedmetadata (Android critical)
 function waitLoadedMetadata(v){
   return new Promise((resolve) => {
     if (v.readyState >= 1 && v.videoWidth) return resolve();
-    const onMeta = () => {
-      v.removeEventListener("loadedmetadata", onMeta);
-      resolve();
-    };
-    v.addEventListener("loadedmetadata", onMeta, { once: true });
+    v.addEventListener("loadedmetadata", () => resolve(), { once: true });
   });
 }
 
@@ -184,9 +177,8 @@ async function start(){
   starting = true;
 
   try {
-    // hard cleanup first
     stopAll();
-    await sleep(200); // Android needs a tiny gap between stop/start
+    await sleep(200);
 
     show(screenPlay);
     hud.textContent = "Калибровка… 2 секунды не моргай";
@@ -200,28 +192,19 @@ async function start(){
     calibrateUntil = Date.now() + CALIB_MS;
     graceUntil = calibrateUntil + GRACE_MS;
 
-    // camera
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user" },
       audio: false
     });
 
-    // sanity: ensure tracks live
-    const vt = stream.getVideoTracks()[0];
-    if (!vt) throw new Error("No video track");
-    if (vt.readyState !== "live") throw new Error("Video track not live");
-
     video.srcObject = stream;
     await waitLoadedMetadata(video);
 
-    // set canvas to real video size
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
 
-    // now play
-    try { await video.play(); } catch { /* ignore; canvas draw still works */ }
+    try { await video.play(); } catch {}
 
-    // facemesh
     faceMesh = new FaceMesh({
       locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
     });
@@ -238,7 +221,7 @@ async function start(){
     faceMesh.onResults((res) => {
       if (!running) return;
 
-      // draw mirrored video to canvas
+      // mirrored base frame
       ctx.save();
       ctx.clearRect(0,0,canvas.width,canvas.height);
       ctx.translate(canvas.width, 0);
@@ -251,11 +234,12 @@ async function start(){
         hud.textContent = "Лицо не видно. Поднеси телефон ближе.";
         return;
       }
+
       const lm = faces[0];
 
       // filter always on
-      warpEye(lm, LEFT_EYE_RING, EYE_SCALE);
-      warpEye(lm, RIGHT_EYE_RING, EYE_SCALE);
+      warpEye(lm, LEFT_EYE_RING);
+      warpEye(lm, RIGHT_EYE_RING);
 
       // blink
       const ear = (eyeEAR(lm, true) + eyeEAR(lm, false)) / 2;
@@ -302,13 +286,12 @@ async function start(){
     console.error(e);
     stopAll();
     show(screenStart);
-    alert("Камера не запустилась. На Android бывает. Перезагрузи страницу и попробуй ещё раз.");
+    alert("Камера не запустилась. Обнови страницу и попробуй ещё раз.");
   } finally {
     starting = false;
   }
 }
 
-// buttons
 btnStart.onclick = () => start();
 btnRetry.onclick = () => start();
 btnQuit.onclick = () => { stopAll(); show(screenStart); };
