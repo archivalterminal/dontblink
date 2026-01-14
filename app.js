@@ -1,3 +1,8 @@
+// =====================
+// ЛУПОГЛАЗ: Android-proof
+// Camera starts ONCE, rounds reset without getUserMedia again
+// =====================
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -16,9 +21,11 @@ let stream = null;
 let faceMesh = null;
 let camera = null;
 
-let running = false;
+let sessionStarted = false;  // camera+facemesh started once
+let playing = false;         // round active
 let starting = false;
 
+// ---------- UI
 function show(which){
   screenStart.style.display = "none";
   screenPlay.style.display = "none";
@@ -26,31 +33,7 @@ function show(which){
   which.style.display = "block";
 }
 
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
-
-function hardDetachVideo(){
-  try { video.pause(); } catch {}
-  try { video.srcObject = null; } catch {}
-  try { video.removeAttribute("src"); } catch {}
-  try { video.load(); } catch {}
-}
-
-function stopAll(){
-  running = false;
-
-  if (camera) { try { camera.stop(); } catch {} camera = null; }
-  if (faceMesh) { try { faceMesh.close(); } catch {} faceMesh = null; }
-
-  if (stream) {
-    try { stream.getTracks().forEach(t => t.stop()); } catch {}
-    stream = null;
-  }
-
-  hardDetachVideo();
-  try { ctx.clearRect(0,0,canvas.width,canvas.height); } catch {}
-}
-
-// ---- helpers
+// ---------- helpers
 function dist(a,b){
   const dx = a.x - b.x;
   const dy = a.y - b.y;
@@ -76,11 +59,12 @@ function eyeEAR(lm, isLeft){
   return (v1 + v2) / (2*h);
 }
 
-// ---- real eye warp
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+// ---------- REAL eye warp (stable, not “whole head”)
 const off = document.createElement("canvas");
 const offCtx = off.getContext("2d");
 
-// rings
 const LEFT_EYE_RING  = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
 const RIGHT_EYE_RING = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
 
@@ -93,11 +77,10 @@ function boundsOf(lm, ids){
   }
   return {minX, minY, maxX, maxY};
 }
-function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
-// Настройка “лупоглаза” без перекрытия головы:
-const EYE_SCALE = 1.65;   // визуально крупно, но не на всю голову
-const PAD = 0.07;         // меньше захват области = меньше “разнос”
+// “лупоглаз” по ощущению, без разнесения
+const EYE_SCALE = 1.70;   // если мало -> 1.85
+const PAD = 0.07;
 const ALPHA = 0.98;
 
 function warpEye(lm, ringIds){
@@ -125,7 +108,6 @@ function warpEye(lm, ringIds){
   const dx = sx - (dw - sw) / 2;
   const dy = sy - (dh - sh) / 2;
 
-  // мягкая эллипс-маска, но НЕ слишком большая
   ctx.save();
   ctx.globalAlpha = ALPHA;
 
@@ -142,29 +124,46 @@ function warpEye(lm, ringIds){
   ctx.restore();
 }
 
-// ---- blink detector state
+// ---------- Round (blink) state
 let calibrateUntil = 0;
 let graceUntil = 0;
+
 let earSamples = [];
 let earThreshold = null;
+
 let closedFrames = 0;
 let lastBlinkTs = 0;
 let seenOpenEyes = false;
 
+// tuning
 const CALIB_MS = 2000;
 const GRACE_MS = 1200;
 const FRAMES_TO_CONFIRM = 4;
 const DEBOUNCE_MS = 700;
 const THRESH_MULT = 0.70;
 
-function lose(reason){
-  if (!running) return;
-  running = false;
-  stopAll();
-  document.getElementById("loseMeta").textContent = reason;
+function resetRound(){
+  earSamples = [];
+  earThreshold = null;
+  closedFrames = 0;
+  lastBlinkTs = 0;
+  seenOpenEyes = false;
+
+  calibrateUntil = Date.now() + CALIB_MS;
+  graceUntil = calibrateUntil + GRACE_MS;
+
+  hud.textContent = "Калибровка… 2 секунды не моргай";
+  playing = true;
+}
+
+function lose(){
+  if (!playing) return;
+  playing = false;
+  document.getElementById("loseMeta").textContent = "Обнаружено моргание.";
   show(screenLose);
 }
 
+// ---------- Start camera ONCE
 function waitLoadedMetadata(v){
   return new Promise((resolve) => {
     if (v.readyState >= 1 && v.videoWidth) return resolve();
@@ -172,126 +171,140 @@ function waitLoadedMetadata(v){
   });
 }
 
-async function start(){
+async function startSessionOnce(){
+  if (sessionStarted) return;
+  sessionStarted = true;
+
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "user" },
+    audio: false
+  });
+
+  video.srcObject = stream;
+  await waitLoadedMetadata(video);
+
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+
+  try { await video.play(); } catch {}
+
+  faceMesh = new FaceMesh({
+    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  faceMesh.onResults((res) => {
+    // draw mirrored base video always
+    ctx.save();
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    const faces = res.multiFaceLandmarks;
+    if (!faces || faces.length === 0) {
+      if (playing) hud.textContent = "Лицо не видно. Поднеси телефон ближе.";
+      return;
+    }
+
+    const lm = faces[0];
+
+    // Filter ALWAYS ON (even on lose screen it will keep drawing if canvas visible)
+    warpEye(lm, LEFT_EYE_RING);
+    warpEye(lm, RIGHT_EYE_RING);
+
+    // If round not active, don't detect blinks
+    if (!playing) return;
+
+    // blink detect
+    const ear = (eyeEAR(lm, true) + eyeEAR(lm, false)) / 2;
+    const now = Date.now();
+
+    if (now < calibrateUntil) {
+      if (ear > 0.20 && ear < 0.65) earSamples.push(ear);
+      return;
+    }
+
+    if (earThreshold === null) {
+      const base = earSamples.length
+        ? earSamples.reduce((a,b)=>a+b,0) / earSamples.length
+        : 0.28;
+      earThreshold = Math.max(0.16, base * THRESH_MULT);
+      hud.textContent = "Не моргай.";
+      return;
+    }
+
+    if (ear > earThreshold * 1.20) seenOpenEyes = true;
+    if (now < graceUntil) return;
+    if (!seenOpenEyes) return;
+
+    const isClosed = ear < earThreshold;
+    closedFrames = isClosed ? (closedFrames + 1) : 0;
+
+    if (closedFrames >= FRAMES_TO_CONFIRM && (now - lastBlinkTs) > DEBOUNCE_MS) {
+      lastBlinkTs = now;
+      lose();
+    }
+  });
+
+  camera = new Camera(video, {
+    onFrame: async () => {
+      if (!faceMesh) return;
+      await faceMesh.send({ image: video });
+    },
+    width: 640,
+    height: 480
+  });
+
+  camera.start();
+}
+
+// ---------- Stop everything only on Quit
+function stopSession(){
+  playing = false;
+  sessionStarted = false;
+
+  if (camera) { try { camera.stop(); } catch {} camera = null; }
+  if (faceMesh) { try { faceMesh.close(); } catch {} faceMesh = null; }
+
+  if (stream) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch {}
+    stream = null;
+  }
+
+  try { video.pause(); } catch {}
+  try { video.srcObject = null; } catch {}
+}
+
+// ---------- Main actions
+async function startGame(){
   if (starting) return;
   starting = true;
-
   try {
-    stopAll();
-    await sleep(200);
-
     show(screenPlay);
-    hud.textContent = "Калибровка… 2 секунды не моргай";
-
-    earSamples = [];
-    earThreshold = null;
-    closedFrames = 0;
-    lastBlinkTs = 0;
-    seenOpenEyes = false;
-
-    calibrateUntil = Date.now() + CALIB_MS;
-    graceUntil = calibrateUntil + GRACE_MS;
-
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user" },
-      audio: false
-    });
-
-    video.srcObject = stream;
-    await waitLoadedMetadata(video);
-
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-
-    try { await video.play(); } catch {}
-
-    faceMesh = new FaceMesh({
-      locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
-    });
-
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-
-    running = true;
-
-    faceMesh.onResults((res) => {
-      if (!running) return;
-
-      // mirrored base frame
-      ctx.save();
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      ctx.restore();
-
-      const faces = res.multiFaceLandmarks;
-      if (!faces || faces.length === 0) {
-        hud.textContent = "Лицо не видно. Поднеси телефон ближе.";
-        return;
-      }
-
-      const lm = faces[0];
-
-      // filter always on
-      warpEye(lm, LEFT_EYE_RING);
-      warpEye(lm, RIGHT_EYE_RING);
-
-      // blink
-      const ear = (eyeEAR(lm, true) + eyeEAR(lm, false)) / 2;
-      const now = Date.now();
-
-      if (now < calibrateUntil) {
-        if (ear > 0.20 && ear < 0.65) earSamples.push(ear);
-        return;
-      }
-
-      if (earThreshold === null) {
-        const base = earSamples.length
-          ? earSamples.reduce((a,b)=>a+b,0) / earSamples.length
-          : 0.28;
-        earThreshold = Math.max(0.16, base * THRESH_MULT);
-        hud.textContent = "Не моргай.";
-        return;
-      }
-
-      if (ear > earThreshold * 1.20) seenOpenEyes = true;
-      if (now < graceUntil) return;
-      if (!seenOpenEyes) return;
-
-      const isClosed = ear < earThreshold;
-      closedFrames = isClosed ? (closedFrames + 1) : 0;
-
-      if (closedFrames >= FRAMES_TO_CONFIRM && (now - lastBlinkTs) > DEBOUNCE_MS) {
-        lastBlinkTs = now;
-        lose("Обнаружено моргание.");
-      }
-    });
-
-    camera = new Camera(video, {
-      onFrame: async () => {
-        if (!faceMesh || !running) return;
-        await faceMesh.send({ image: video });
-      },
-      width: 640,
-      height: 480
-    });
-
-    camera.start();
+    await startSessionOnce();   // camera only once
+    resetRound();               // round resets any time
   } catch (e) {
     console.error(e);
-    stopAll();
+    alert("Камера не запустилась. Проверь разрешение камеры в Chrome.");
     show(screenStart);
-    alert("Камера не запустилась. Обнови страницу и попробуй ещё раз.");
   } finally {
     starting = false;
   }
 }
 
-btnStart.onclick = () => start();
-btnRetry.onclick = () => start();
-btnQuit.onclick = () => { stopAll(); show(screenStart); };
+// buttons
+btnStart.onclick = () => startGame();
+btnRetry.onclick = () => startGame();
+
+btnQuit.onclick = () => {
+  stopSession();     // only here we stop camera
+  show(screenStart);
+};
