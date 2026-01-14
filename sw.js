@@ -1,6 +1,17 @@
-self.addEventListener("install", e => {
-  e.waitUntil(caches.open("dontblink").then(c => c.addAll(["./"])));
+// NO-CACHE service worker (for Android sanity)
+self.addEventListener("install", (event) => {
+  self.skipWaiting();
 });
-self.addEventListener("fetch", e => {
-  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => caches.delete(k)));
+    await self.clients.claim();
+  })());
+});
+
+// Always go to network (no caching)
+self.addEventListener("fetch", (event) => {
+  event.respondWith(fetch(event.request));
 });
