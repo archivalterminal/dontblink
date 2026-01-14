@@ -1,5 +1,5 @@
 // =====================
-// ЛУПОГЛАЗ: real eye-warp + blink detect
+// ЛУПОГЛАЗ: real eye-warp + blink detect (FIX: no instant lose)
 // =====================
 
 const video = document.getElementById("video");
@@ -64,7 +64,6 @@ function eyeEAR(lm, isLeft){
 const off = document.createElement("canvas");
 const offCtx = off.getContext("2d");
 
-// indices around eyes for bounds (rough, stable)
 const LEFT_EYE_RING  = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
 const RIGHT_EYE_RING = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
 
@@ -77,20 +76,17 @@ function boundsOf(lm, ids){
   }
   return {minX, minY, maxX, maxY};
 }
-
 function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
 
 function warpEye(lm, ringIds, scale){
-  // get eye bounds in pixels
   const b = boundsOf(lm, ringIds);
 
-  // add padding so it feels like x2.5
-  const pad = 0.18;
-  let x1 = b.minX - pad, y1 = b.minY - pad;
-  let x2 = b.maxX + pad, y2 = b.maxY + pad;
-
-  x1 = clamp(x1, 0, 1); y1 = clamp(y1, 0, 1);
-  x2 = clamp(x2, 0, 1); y2 = clamp(y2, 0, 1);
+  // padding a bit smaller (more stable)
+  const pad = 0.14;
+  let x1 = clamp(b.minX - pad, 0, 1);
+  let y1 = clamp(b.minY - pad, 0, 1);
+  let x2 = clamp(b.maxX + pad, 0, 1);
+  let y2 = clamp(b.maxY + pad, 0, 1);
 
   const W = canvas.width, H = canvas.height;
 
@@ -99,26 +95,23 @@ function warpEye(lm, ringIds, scale){
   const sw = Math.max(2, Math.floor((x2 - x1) * W));
   const sh = Math.max(2, Math.floor((y2 - y1) * H));
 
-  // offscreen crop
   off.width = sw;
   off.height = sh;
   offCtx.clearRect(0,0,sw,sh);
   offCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
 
-  // draw scaled crop back, centered
   const dw = sw * scale;
   const dh = sh * scale;
   const dx = sx - (dw - sw) / 2;
   const dy = sy - (dh - sh) / 2;
 
-  // soft mask (ellipse) for smooth edges
   ctx.save();
   ctx.globalAlpha = 0.98;
 
   const cx = sx + sw/2;
   const cy = sy + sh/2;
-  const rx = (sw * 0.60) * scale;
-  const ry = (sh * 0.55) * scale;
+  const rx = (sw * 0.58) * scale;
+  const ry = (sh * 0.52) * scale;
 
   ctx.beginPath();
   ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
@@ -130,17 +123,27 @@ function warpEye(lm, ringIds, scale){
 
 // ---------- state for blink detector
 let calibrateUntil = 0;
+let graceUntil = 0;
+
 let earSamples = [];
 let earThreshold = null;
+
 let closedFrames = 0;
 let lastBlinkTs = 0;
+
 let running = false;
+let seenOpenEyes = false;
 
 // TUNE:
-const EYE_SCALE = 2.5;        // agreed
-const CALIB_MS = 2000;        // 2 sec calibration (no blink)
-const FRAMES_TO_CONFIRM = 3;  // if misses -> 2 ; if false -> 4
-const DEBOUNCE_MS = 650;
+const EYE_SCALE = 2.5;
+const CALIB_MS = 2000;        // 2 sec calibration
+const GRACE_MS = 1200;        // extra time after calibration: can't lose
+const FRAMES_TO_CONFIRM = 4;  // was 3; more stable
+const DEBOUNCE_MS = 700;
+
+// Threshold multiplier: LOWER => easier to detect blink (but may false trigger)
+// We set softer because you instantly lose right now.
+const THRESH_MULT = 0.70;
 
 function lose(reason){
   if (!running) return;
@@ -158,7 +161,11 @@ async function start(){
   earThreshold = null;
   closedFrames = 0;
   lastBlinkTs = 0;
+  seenOpenEyes = false;
+
   calibrateUntil = Date.now() + CALIB_MS;
+  graceUntil = calibrateUntil + GRACE_MS;
+
   running = true;
 
   stream = await navigator.mediaDevices.getUserMedia({
@@ -168,7 +175,6 @@ async function start(){
   video.srcObject = stream;
   await video.play();
 
-  // set canvas size from real video
   canvas.width = video.videoWidth || 640;
   canvas.height = video.videoHeight || 480;
 
@@ -186,7 +192,7 @@ async function start(){
   faceMesh.onResults((res) => {
     if (!running) return;
 
-    // draw mirrored base video to canvas
+    // draw mirrored base video
     ctx.save();
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.translate(canvas.width, 0);
@@ -195,37 +201,53 @@ async function start(){
     ctx.restore();
 
     const faces = res.multiFaceLandmarks;
-    if (!faces || faces.length === 0) return;
-
-    const lm = faces[0];
-
-    // 1) apply REAL eye enlargement (only eyes; neutral face)
-    warpEye(lm, LEFT_EYE_RING, EYE_SCALE);
-    warpEye(lm, RIGHT_EYE_RING, EYE_SCALE);
-
-    // 2) blink detection (EAR)
-    const ear = (eyeEAR(lm, true) + eyeEAR(lm, false)) / 2;
-    const now = Date.now();
-
-    if (now < calibrateUntil) {
-      // collect baseline when eyes are open-ish
-      if (ear > 0.12 && ear < 0.65) earSamples.push(ear);
+    if (!faces || faces.length === 0) {
+      hud.textContent = "Лицо не видно. Поднеси телефон ближе.";
       return;
     }
 
+    const lm = faces[0];
+
+    // apply eye warp
+    warpEye(lm, LEFT_EYE_RING, EYE_SCALE);
+    warpEye(lm, RIGHT_EYE_RING, EYE_SCALE);
+
+    // blink detection
+    const ear = (eyeEAR(lm, true) + eyeEAR(lm, false)) / 2;
+    const now = Date.now();
+
+    // During calibration: collect only open-ish samples
+    if (now < calibrateUntil) {
+      if (ear > 0.20 && ear < 0.65) {  // stricter open gate
+        earSamples.push(ear);
+      }
+      return;
+    }
+
+    // Set threshold once
     if (earThreshold === null) {
       const base = earSamples.length
         ? earSamples.reduce((a,b)=>a+b,0) / earSamples.length
         : 0.28;
 
-      // IMPORTANT: higher multiplier => harder to trigger (less sensitive).
-      // If it does NOT catch your blink, change 0.78 -> 0.82
-      // If false triggers, change 0.78 -> 0.74
-      earThreshold = Math.max(0.16, base * 0.78);
-
-      hud.textContent = "Отслеживание включено. Не моргай.";
+      earThreshold = Math.max(0.16, base * THRESH_MULT);
+      hud.textContent = "Не моргай.";
       return;
     }
+
+    // mark that we have seen eyes open (prevents instant lose when starting in closed/odd state)
+    if (ear > earThreshold * 1.20) {
+      seenOpenEyes = true;
+    }
+
+    // extra grace after calibration: no losing
+    if (now < graceUntil) {
+      hud.textContent = "Не моргай.";
+      return;
+    }
+
+    // only start detecting after we've seen open eyes
+    if (!seenOpenEyes) return;
 
     const isClosed = ear < earThreshold;
     closedFrames = isClosed ? (closedFrames + 1) : 0;
