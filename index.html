@@ -15,7 +15,6 @@
     .big{font-size:34px;font-weight:900;margin:0 0 6px 0}
     .sub{margin:0 0 14px 0;color:#cfcfcf;font-size:14px}
     .videoWrap{position:relative;border-radius:16px;overflow:hidden;border:1px solid #222;background:#000}
-    /* Видео скрываем — рисуем всё в canvas */
     video{display:none}
     canvas{width:100%;display:block}
     .hud{margin-top:10px;padding:10px 12px;border:1px solid #222;border-radius:12px;background:#0a0a0a}
@@ -56,6 +55,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-<script src="app.js"></script>
+
+<!-- ВАЖНО: ?v=3 обходит кэш на Android -->
+<script src="app.js?v=3"></script>
 </body>
 </html>
